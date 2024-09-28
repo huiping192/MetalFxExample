@@ -7,75 +7,95 @@
 
 import SwiftUI
 import AVFoundation
+import MetalKit
+
 struct ContentView: View {
   @StateObject private var viewModel = ContentViewModel()
+  @State private var showControls = true
   
   var body: some View {
-    VStack {
+    GeometryReader { geometry in
       ZStack {
-        SampleBufferView(sampleBuffer: $viewModel.originalSampleBuffer)
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .mask(
-            GeometryReader { geometry in
+        // 图像层
+        ZStack {
+          SampleBufferView(sampleBuffer: $viewModel.originalSampleBuffer)
+            .mask(
               HStack(spacing: 0) {
                 Rectangle()
                   .frame(width: geometry.size.width * viewModel.splitPosition)
                 Rectangle().fill(Color.clear)
               }
-            }
-          )
-        
-        SampleBufferView(sampleBuffer: $viewModel.processedSampleBuffer)
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .mask(
-            GeometryReader { geometry in
+            )
+          
+          MetalView(texture: viewModel.processedTexture)
+            .mask(
               HStack(spacing: 0) {
                 Rectangle().fill(Color.clear)
                   .frame(width: geometry.size.width * viewModel.splitPosition)
                 Rectangle()
               }
-            }
-          )
-        
-        // 添加分界线
-        GeometryReader { geometry in
+            )
+          
+          // 分界线
           Rectangle()
             .fill(Color.white)
             .frame(width: 2)
             .position(x: geometry.size.width * viewModel.splitPosition, y: geometry.size.height / 2)
         }
+        .edgesIgnoringSafeArea(.all)
         
-        // 添加标签
-        GeometryReader { geometry in
-          VStack {
-            Text("Original")
-              .foregroundColor(.white)
-              .padding(5)
-              .background(Color.black.opacity(0.7))
-              .cornerRadius(5)
-              .position(x: geometry.size.width * viewModel.splitPosition / 2, y: 20)
+        // 控制层
+        VStack {
+          if showControls {
+            // 标签
+            HStack {
+              Text("Original")
+                .foregroundColor(.white)
+                .padding(5)
+                .background(Color.black.opacity(0.7))
+                .cornerRadius(5)
+                .padding(.leading)
+              
+              Spacer()
+              
+              Text("Processed")
+                .foregroundColor(.white)
+                .padding(5)
+                .background(Color.black.opacity(0.7))
+                .cornerRadius(5)
+                .padding(.trailing)
+            }
+            .padding(.top, geometry.safeAreaInsets.top)
             
-            Text("Processed")
-              .foregroundColor(.white)
-              .padding(5)
-              .background(Color.black.opacity(0.7))
-              .cornerRadius(5)
-              .position(x: geometry.size.width * (1 + viewModel.splitPosition) / 2, y: 20)
+            Spacer()
+            
+            // 控制按钮和滑块
+            VStack {
+              Button(action: {
+                viewModel.toggleCamera()
+              }) {
+                Text(viewModel.isCameraRunning ? "Stop Camera" : "Start Camera")
+                  .padding()
+                  .background(Color.blue)
+                  .foregroundColor(.white)
+                  .cornerRadius(10)
+              }
+              
+              Slider(value: $viewModel.splitPosition, in: 0...1)
+                .padding()
+            }
+            //            .background(Color.black.opacity(0.5))
+            .cornerRadius(10)
+            .padding()
           }
         }
       }
-      .aspectRatio(16/9, contentMode: .fit)
-      .border(Color.gray, width: 1)
-      
-      Button(action: {
-        viewModel.toggleCamera()
-      }) {
-        Text(viewModel.isCameraRunning ? "Stop Camera" : "Start Camera")
+    }
+    .statusBar(hidden: true)
+    .onTapGesture {
+      withAnimation {
+        showControls.toggle()
       }
-      .padding()
-      
-      Slider(value: $viewModel.splitPosition, in: 0...1)
-        .padding()
     }
   }
 }
@@ -175,6 +195,8 @@ class ContentViewModel: ObservableObject {
   @Published var isCameraRunning = false
   
   @Published var splitPosition: Double = 0.5 // 默认在中间
+  @Published var processedImage: UIImage?
+  @Published var processedTexture: MTLTexture?
   
   private let cameraManager = CameraManager()
   private let imageProcessor: MetalImageProcessor?
@@ -195,17 +217,104 @@ class ContentViewModel: ObservableObject {
     DispatchQueue.main.async {
       self.originalSampleBuffer = sampleBuffer
       if let processedBuffer = self.imageProcessor?.processBuffer(sampleBuffer) {
-        self.processedSampleBuffer = processedBuffer
+        self.processedTexture = processedBuffer
+        //        let image = uiImage(from: processedBuffer)
+        //        self.processedImage = image
+        print("Updated processedImage")
       }
     }
   }
   
   func toggleCamera() {
-    if isCameraRunning {
-      cameraManager.stopRunning()
-    } else {
-      cameraManager.startRunning()
+    Task {
+      if isCameraRunning {
+        cameraManager.stopRunning()
+      } else {
+        cameraManager.startRunning()
+      }
     }
     isCameraRunning.toggle()
+  }
+}
+
+
+struct MetalView: UIViewRepresentable {
+  var texture: MTLTexture?
+  
+  func makeUIView(context: Context) -> MTKView {
+    let mtkView = MTKView()
+    mtkView.device = MTLCreateSystemDefaultDevice()
+    mtkView.delegate = context.coordinator
+    mtkView.enableSetNeedsDisplay = true
+    mtkView.framebufferOnly = false
+    mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+    mtkView.colorPixelFormat = .bgra8Unorm
+    mtkView.contentMode = .scaleAspectFit
+    return mtkView
+  }
+  
+  func updateUIView(_ uiView: MTKView, context: Context) {
+    context.coordinator.texture = texture
+    uiView.setNeedsDisplay()
+  }
+  
+  func makeCoordinator() -> Coordinator {
+    Coordinator(self)
+  }
+  
+  class Coordinator: NSObject, MTKViewDelegate {
+    var parent: MetalView
+    var texture: MTLTexture?
+    var pipelineState: MTLRenderPipelineState?
+    var commandQueue: MTLCommandQueue?
+    
+    init(_ parent: MetalView) {
+      self.parent = parent
+      super.init()
+      createPipelineState()
+    }
+    
+    func createPipelineState() {
+      guard let device = MTLCreateSystemDefaultDevice() else { return }
+      commandQueue = device.makeCommandQueue()
+      
+      let library = device.makeDefaultLibrary()
+      let vertexFunction = library?.makeFunction(name: "vertexShader")
+      let fragmentFunction = library?.makeFunction(name: "fragmentShader")
+      
+      let pipelineDescriptor = MTLRenderPipelineDescriptor()
+      pipelineDescriptor.vertexFunction = vertexFunction
+      pipelineDescriptor.fragmentFunction = fragmentFunction
+      pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+      
+      do {
+        pipelineState = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
+      } catch {
+        print("Unable to create pipeline state: \(error)")
+      }
+    }
+    
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+    
+    func draw(in view: MTKView) {
+      guard let texture = texture,
+            let pipelineState = pipelineState,
+            let commandQueue = commandQueue,
+            let commandBuffer = commandQueue.makeCommandBuffer(),
+            let descriptor = view.currentRenderPassDescriptor,
+            let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+        return
+      }
+      
+      renderEncoder.setRenderPipelineState(pipelineState)
+      renderEncoder.setFragmentTexture(texture, index: 0)
+      renderEncoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+      renderEncoder.endEncoding()
+      
+      if let drawable = view.currentDrawable {
+        commandBuffer.present(drawable)
+      }
+      commandBuffer.commit()
+    }
   }
 }

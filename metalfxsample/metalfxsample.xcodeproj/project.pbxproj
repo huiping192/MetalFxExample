@@ -29,9 +29,22 @@
 		DC22533D2CA805ED00F7EA8C /* metalfxsampleUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = metalfxsampleUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		DC2253842CA843A500F7EA8C /* Exceptions for "metalfxsample" folder in "metalfxsample" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = DC2253212CA805EB00F7EA8C /* metalfxsample */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		DC2253242CA805EB00F7EA8C /* metalfxsample */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				DC2253842CA843A500F7EA8C /* Exceptions for "metalfxsample" folder in "metalfxsample" target */,
+			);
 			path = metalfxsample;
 			sourceTree = "<group>";
 		};

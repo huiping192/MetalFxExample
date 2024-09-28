@@ -22,7 +22,11 @@ class CameraManager: NSObject {
     captureSession = AVCaptureSession()
     captureSession?.sessionPreset = .hd1280x720 // Set to 720p
     
-    guard let device = AVCaptureDevice.default(for: .video) else { return }
+    // 获取前置摄像头
+    guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) else {
+      print("Failed to get front camera")
+      return
+    }
     
     do {
       let input = try AVCaptureDeviceInput(device: device)
@@ -39,17 +43,33 @@ class CameraManager: NSObject {
         captureSession?.addOutput(output)
       }
       
+      // 设置视频方向为竖直
+      if let connection = output.connection(with: .video) {
+        if connection.isVideoOrientationSupported {
+          connection.videoOrientation = .portrait
+        }
+        
+        // 如果需要镜像前置摄像头的画面（通常需要）
+        if connection.isVideoMirroringSupported {
+          connection.isVideoMirrored = true
+        }
+      }
+      
     } catch {
       print("Failed to set up capture session: \(error)")
     }
   }
   
   func startRunning() {
-    captureSession?.startRunning()
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      self?.captureSession?.startRunning()
+    }
   }
   
   func stopRunning() {
-    captureSession?.stopRunning()
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      self?.captureSession?.stopRunning()
+    }
   }
   
   func setSampleBufferCallback(_ callback: @escaping SampleBufferCallback) {
