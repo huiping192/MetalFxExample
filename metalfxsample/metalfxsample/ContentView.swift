@@ -27,7 +27,7 @@ struct ContentView: View {
               }
             )
           
-          MetalView(texture: viewModel.processedTexture)
+          SampleBufferView(sampleBuffer: $viewModel.processedSampleBuffer)
             .mask(
               HStack(spacing: 0) {
                 Rectangle().fill(Color.clear)
@@ -39,7 +39,7 @@ struct ContentView: View {
           // 分界线
           Rectangle()
             .fill(Color.white)
-            .frame(width: 2)
+            .frame(width: 1)
             .position(x: geometry.size.width * viewModel.splitPosition, y: geometry.size.height / 2)
         }
         .edgesIgnoringSafeArea(.all)
@@ -71,20 +71,18 @@ struct ContentView: View {
             
             // 控制按钮和滑块
             VStack {
+              Slider(value: $viewModel.splitPosition, in: 0...1)
+                .padding()
               Button(action: {
                 viewModel.toggleCamera()
               }) {
-                Text(viewModel.isCameraRunning ? "Stop Camera" : "Start Camera")
+                Text(viewModel.isCameraRunning ? "Stop" : "Start")
                   .padding()
                   .background(Color.blue)
                   .foregroundColor(.white)
                   .cornerRadius(10)
               }
-              
-              Slider(value: $viewModel.splitPosition, in: 0...1)
-                .padding()
             }
-            //            .background(Color.black.opacity(0.5))
             .cornerRadius(10)
             .padding()
           }
@@ -130,7 +128,7 @@ class SampleBufferDisplayView: UIView {
   }
   
   private func setupDisplayLayer() {
-    displayLayer.videoGravity = .resizeAspect
+    displayLayer.videoGravity = .resizeAspectFill
     layer.addSublayer(displayLayer)
   }
   
@@ -195,8 +193,6 @@ class ContentViewModel: ObservableObject {
   @Published var isCameraRunning = false
   
   @Published var splitPosition: Double = 0.5 // 默认在中间
-  @Published var processedImage: UIImage?
-  @Published var processedTexture: MTLTexture?
   
   private let cameraManager = CameraManager()
   private let imageProcessor: MetalImageProcessor?
@@ -217,10 +213,7 @@ class ContentViewModel: ObservableObject {
     DispatchQueue.main.async {
       self.originalSampleBuffer = sampleBuffer
       if let processedBuffer = self.imageProcessor?.processBuffer(sampleBuffer) {
-        self.processedTexture = processedBuffer
-        //        let image = uiImage(from: processedBuffer)
-        //        self.processedImage = image
-        print("Updated processedImage")
+        self.processedSampleBuffer = processedBuffer
       }
     }
   }

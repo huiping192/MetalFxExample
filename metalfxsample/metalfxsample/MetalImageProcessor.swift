@@ -107,7 +107,7 @@ class MetalImageProcessor {
                      mipmapLevel: 0)
   }
   
-  func processBuffer(_ inputBuffer: CMSampleBuffer) -> MTLTexture? {
+  func processBuffer(_ inputBuffer: CMSampleBuffer) -> CMSampleBuffer? {
     guard let pixelBuffer = CMSampleBufferGetImageBuffer(inputBuffer) else {
       print("Failed to get pixel buffer from input sample buffer")
       return nil
@@ -116,7 +116,7 @@ class MetalImageProcessor {
     let inputWidth = CVPixelBufferGetWidth(pixelBuffer)
     let inputHeight = CVPixelBufferGetHeight(pixelBuffer)
     let inputPixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
-    
+
     if spatialScaler == nil {
       self.inputWidth = inputWidth
       self.inputHeight = inputHeight
@@ -133,6 +133,8 @@ class MetalImageProcessor {
       print("Failed to create input texture")
       return nil
     }
+//    let pba =  convertMTLTextureToCVPixelBuffer(texture: inputTexture)!
+//    return convertCVPixelBufferToCMSampleBuffer(pixelBuffer: pba, originalSampleBuffer: inputBuffer)
     
     // Create output texture
     let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
@@ -171,61 +173,26 @@ class MetalImageProcessor {
     spatialScaler.outputTexture = outputTexture
     spatialScaler.encode(commandBuffer: commandBuffer)
     
-//    let blitEncoder = commandBuffer.makeBlitCommandEncoder()
-//    blitEncoder?.copy(from: outputTexture, to: finalOutputTexture)
-//    blitEncoder?.endEncoding()
+    let blitEncoder = commandBuffer.makeBlitCommandEncoder()
+    blitEncoder?.copy(from: outputTexture, to: finalOutputTexture)
+    blitEncoder?.endEncoding()
     
     commandBuffer.commit()
     commandBuffer.waitUntilCompleted()
     
-    return  outputTexture
-    
-    // Create output pixel buffer
-//    var newPixelBuffer: CVPixelBuffer?
-//    let pixelBufferAttributes = [
-//      kCVPixelBufferWidthKey: outputWidth!,
-//      kCVPixelBufferHeightKey: outputHeight!,
-//      kCVPixelBufferPixelFormatTypeKey: inputPixelFormat // Use the same format as input
-//    ] as CFDictionary
-//    
-//    CVPixelBufferCreate(kCFAllocatorDefault, outputWidth!, outputHeight!, inputPixelFormat, pixelBufferAttributes, &newPixelBuffer)
-//    
-//    if let newPixelBuffer = newPixelBuffer {
-//      copyTextureToPixelBuffer(texture: finalOutputTexture, pixelBuffer: newPixelBuffer)
-//      return makeSampleBuffer(pixelBuffer: newPixelBuffer, originBuffer: inputBuffer)
-//    } else {
-//      print("Failed to create new pixel buffer")
-//    }
-    
-//    return nil
+    let pb = convertMTLTextureToCVPixelBuffer(texture: finalOutputTexture)    
+    return convertCVPixelBufferToCMSampleBuffer(pixelBuffer: pb!, originalSampleBuffer: inputBuffer)
   }
   
   
-  func makeSampleBuffer(pixelBuffer: CVPixelBuffer, originBuffer: CMSampleBuffer) -> CMSampleBuffer? {
-    // Create new sample buffer
-    var newSampleBuffer: CMSampleBuffer?
+  func convertCVPixelBufferToCMSampleBuffer(pixelBuffer: CVPixelBuffer, originalSampleBuffer: CMSampleBuffer) -> CMSampleBuffer? {
+    
+    // 从原始SampleBuffer获取timing信息
     var timingInfo = CMSampleTimingInfo()
-    CMSampleBufferGetSampleTimingInfo(originBuffer, at: 0, timingInfoOut: &timingInfo)
-    
-    var formatDescription: CMFormatDescription?
-    CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: pixelBuffer, formatDescriptionOut: &formatDescription)
-    
-    guard let formatDescription = formatDescription else {
-      print("Failed to create format description")
-      return nil
-    }
-    
-    CMSampleBufferCreateForImageBuffer(
-      allocator: kCFAllocatorDefault,
-      imageBuffer: pixelBuffer,
-      dataReady: true,
-      makeDataReadyCallback: nil,
-      refcon: nil,
-      formatDescription: formatDescription,
-      sampleTiming: &timingInfo,
-      sampleBufferOut: &newSampleBuffer)
-    
-    return newSampleBuffer
+    var count: CMItemCount = 0
+    CMSampleBufferGetSampleTimingInfoArray(originalSampleBuffer, entryCount: 1, arrayToFill: &timingInfo, entriesNeededOut: &count)
+
+    return CMSampleBuffer.make(from: pixelBuffer, formatDescription: CMFormatDescription.make(from: pixelBuffer)!, timingInfo: &timingInfo)
   }
 }
 
@@ -245,9 +212,122 @@ func uiImage(from sampleBuffer: CMSampleBuffer) -> UIImage? {
     return nil
   }
   
-  // 注意：这里的方向可能需要根据实际情况调整
+  return UIImage(cgImage: cgImage, scale: 1.0, orientation: .up)
+}
+
+func converToImage(pixelBuffer: CVPixelBuffer) -> UIImage? {
+  let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+  let context = CIContext()
+  
+  guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+    print("Failed to create CGImage")
+    return nil
+  }
+  
   return UIImage(cgImage: cgImage, scale: 1.0, orientation: .up)
 }
 
 
+
 #endif
+
+
+func convertMTLTextureToCVPixelBuffer(texture: MTLTexture) -> CVPixelBuffer? {
+  let width = texture.width
+      let height = texture.height
+      
+      var pixelBuffer: CVPixelBuffer?
+      let attributes = [
+          kCVPixelBufferMetalCompatibilityKey: true,
+          kCVPixelBufferIOSurfacePropertiesKey: [:]
+      ] as CFDictionary
+      
+      let status = CVPixelBufferCreate(
+          kCFAllocatorDefault,
+          width,
+          height,
+          kCVPixelFormatType_32BGRA,
+          attributes,
+          &pixelBuffer
+      )
+      
+      guard status == kCVReturnSuccess, let pixelBuffer = pixelBuffer else {
+          print("Failed to create pixel buffer")
+          return nil
+      }
+      
+      CVPixelBufferLockBaseAddress(pixelBuffer, [])
+      defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+      
+      guard let pixelBufferBaseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+          print("Failed to get pixel buffer base address")
+          return nil
+      }
+      
+      let region = MTLRegionMake2D(0, 0, width, height)
+      texture.getBytes(
+          pixelBufferBaseAddress,
+          bytesPerRow: CVPixelBufferGetBytesPerRow(pixelBuffer),
+          from: region,
+          mipmapLevel: 0
+      )
+      
+      // 设置额外的属性
+      CVBufferSetAttachment(pixelBuffer, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_709_2, .shouldPropagate)
+      CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_709_2, .shouldPropagate)
+      CVBufferSetAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_ITU_R_709_2, .shouldPropagate)
+      
+      return pixelBuffer
+}
+
+
+func convertCVPixelBufferToUIImage(pixelBuffer: CVPixelBuffer) -> UIImage? {
+  CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+  defer {
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
+  }
+  
+  let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer)
+  let width = CVPixelBufferGetWidth(pixelBuffer)
+  let height = CVPixelBufferGetHeight(pixelBuffer)
+  let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+  let colorSpace = CGColorSpaceCreateDeviceRGB()
+  let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+  
+  guard let context = CGContext(data: baseAddress,
+                                width: width,
+                                height: height,
+                                bitsPerComponent: 8,
+                                bytesPerRow: bytesPerRow,
+                                space: colorSpace,
+                                bitmapInfo: bitmapInfo.rawValue) else {
+    print("Failed to create CGContext")
+    return nil
+  }
+  
+  guard let cgImage = context.makeImage() else {
+    print("Failed to create CGImage")
+    return nil
+  }
+  
+  let image = UIImage(cgImage: cgImage)
+  return image
+}
+
+
+extension CMFormatDescription {
+  static func make(from pixelBuffer: CVPixelBuffer) -> CMFormatDescription? {
+    var formatDescription: CMFormatDescription?
+    CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: pixelBuffer, formatDescriptionOut: &formatDescription)
+    return formatDescription
+  }
+}
+
+extension CMSampleBuffer {
+  static func make(from pixelBuffer: CVPixelBuffer, formatDescription: CMFormatDescription, timingInfo: inout CMSampleTimingInfo) -> CMSampleBuffer? {
+    var sampleBuffer: CMSampleBuffer?
+    CMSampleBufferCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: pixelBuffer, dataReady: true, makeDataReadyCallback: nil,
+                                       refcon: nil, formatDescription: formatDescription, sampleTiming: &timingInfo, sampleBufferOut: &sampleBuffer)
+    return sampleBuffer
+  }
+}
